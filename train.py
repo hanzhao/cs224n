@@ -5,6 +5,7 @@ from collections import OrderedDict
 import torch
 import csv
 import util
+import nlpaug.augmenter.word as naw
 from transformers import DistilBertTokenizerFast
 from transformers import DistilBertForQuestionAnswering
 from transformers import AdamW
@@ -115,8 +116,6 @@ def prepare_train_data(dataset_dict, tokenizer):
     total = len(tokenized_examples['id'])
     print(f"Preprocessing not completely accurate for {inaccurate}/{total} instances")
     return tokenized_examples
-
-
 
 def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, split):
     #TODO: cache this if possible
@@ -246,7 +245,14 @@ def get_dataset(args, datasets, data_dir, tokenizer, split_name):
     dataset_name=''
     for dataset in datasets:
         dataset_name += f'_{dataset}'
-        dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}')
+        augmenters = []
+        if split_name == 'train':
+            augmenters = [
+                # Data Augmentation
+                # (naw.RandomWordAug(action="swap"), 10),
+                # (naw.SynonymAug(aug_src='wordnet'), 10),
+            ]
+        dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}', augmenters)
         dataset_dict = util.merge(dataset_dict, dataset_dict_curr)
     data_encodings = read_and_process(args, tokenizer, dataset_dict, data_dir, dataset_name, split_name)
     return util.QADataset(data_encodings, train=(split_name=='train')), dataset_dict
@@ -256,7 +262,10 @@ def main():
     args = get_train_test_args()
 
     util.set_seed(args.seed)
-    model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    if args.checkpoint_path:
+        model = DistilBertForQuestionAnswering.from_pretrained(args.checkpoint_path)
+    else:
+        model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
 
     if args.do_train:

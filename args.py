@@ -13,6 +13,7 @@ def get_train_test_args():
     parser.add_argument('--train-datasets', type=str, default='squad,nat_questions,newsqa')
     parser.add_argument('--run-name', type=str, default='multitask_distilbert')
     parser.add_argument('--recompute-features', action='store_true')
+    parser.add_argument('--checkpoint-path', type=str, default='')
     parser.add_argument('--train-dir', type=str, default='datasets/indomain_train')
     parser.add_argument('--val-dir', type=str, default='datasets/indomain_val')
     parser.add_argument('--eval-dir', type=str, default='datasets/oodomain_test')

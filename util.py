@@ -186,26 +186,33 @@ class QADataset(Dataset):
     def __len__(self):
         return len(self.encodings['input_ids'])
 
-def read_squad(path):
+def read_squad(path, augmenters = []):
     path = Path(path)
     with open(path, 'rb') as f:
         squad_dict = json.load(f)
     data_dict = {'question': [], 'context': [], 'id': [], 'answer': []}
     for group in squad_dict['data']:
         for passage in group['paragraphs']:
-            context = passage['context']
-            for qa in passage['qas']:
-                question = qa['question']
-                if len(qa['answers']) == 0:
-                    data_dict['question'].append(question)
-                    data_dict['context'].append(context)
-                    data_dict['id'].append(qa['id'])
+            original_context = passage['context']
+            contexts = [original_context]
+            for augmenter, n_candidates in augmenters:
+                if n_candidates == 1:
+                    contexts.append(augmenter.augment(original_context, n=n_candidates))
                 else:
-                    for answer in  qa['answers']:
+                    contexts = contexts + augmenter.augment(original_context, n=n_candidates)
+            for context in contexts:
+                for qa in passage['qas']:
+                    question = qa['question']
+                    if len(qa['answers']) == 0:
                         data_dict['question'].append(question)
                         data_dict['context'].append(context)
                         data_dict['id'].append(qa['id'])
-                        data_dict['answer'].append(answer)
+                    else:
+                        for answer in  qa['answers']:
+                            data_dict['question'].append(question)
+                            data_dict['context'].append(context)
+                            data_dict['id'].append(qa['id'])
+                            data_dict['answer'].append(answer)
     id_map = ddict(list)
     for idx, qid in enumerate(data_dict['id']):
         id_map[qid].append(idx)
