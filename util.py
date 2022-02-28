@@ -186,33 +186,101 @@ class QADataset(Dataset):
     def __len__(self):
         return len(self.encodings['input_ids'])
 
+def find_all_indices(s, substr):
+    res = []
+    q = -1
+    idx = s.find(substr, q + 1)
+    while idx != -1:
+        res.append(idx)
+        idx = s.find(substr, q + 1)
+    return res
+
 def read_squad(path, augmenters = []):
     path = Path(path)
     with open(path, 'rb') as f:
         squad_dict = json.load(f)
     data_dict = {'question': [], 'context': [], 'id': [], 'answer': []}
+    total_original_samples = 0
+    total_augmented_samples = 0
+    rejected_augmented_samples = 0
     for group in squad_dict['data']:
         for passage in group['paragraphs']:
             original_context = passage['context']
-            contexts = [original_context]
+            contexts = [(original_context, [])]
             for augmenter, n_candidates in augmenters:
                 if n_candidates == 1:
                     contexts.append(augmenter.augment(original_context, n=n_candidates))
                 else:
                     contexts = contexts + augmenter.augment(original_context, n=n_candidates)
-            for context in contexts:
+            for idx, context_maybe_with_changelog in enumerate(contexts):
+                context = ''
+                changelog = None
+                if len(context_maybe_with_changelog) == 2:
+                    (context, changelog) = context_maybe_with_changelog
+                else:
+                    context = context_maybe_with_changelog
                 for qa in passage['qas']:
+                    # Fix primary key with suffix "_0", "_1", ..., when augmentation enabled.
+                    qa_id = f"{qa['id']}_{idx}" if len(augmenters) > 0 else qa['id']
                     question = qa['question']
                     if len(qa['answers']) == 0:
                         data_dict['question'].append(question)
                         data_dict['context'].append(context)
-                        data_dict['id'].append(qa['id'])
+                        data_dict['id'].append(qa_id)
                     else:
-                        for answer in  qa['answers']:
+                        for answer in qa['answers']:
+                            answer_modified = False
+                            # answers may have been moved away.
+                            closest_change_index = -1
+                            offset = 0
+                            start_fix = 0
+                            if changelog is not None and len(changelog) == 0:
+                                total_original_samples += 1
+                            else:
+                                # Fix some data starting with "\n"
+                                for ch in original_context:
+                                    if ch == '\n':
+                                        start_fix -= 1
+                                    else:
+                                        break
+                                total_augmented_samples += 1
+                            if changelog is None:
+                                # fallback to use find
+                                possible_starts = find_all_indices(context, answer['text'])
+                                if len(possible_starts) == 1:
+                                    answer_start = possible_starts[0]
+                                else:
+                                    rejected_augmented_samples += 1
+                                    continue
+                            else:
+                                for change in changelog:
+                                    if change['orig_start_pos'] >= answer['answer_start'] + start_fix and change['orig_start_pos'] < answer['answer_start'] + start_fix + len(answer['text']):
+                                        answer_modified = True
+                                    if change['orig_start_pos'] > closest_change_index and change['orig_start_pos'] < answer['answer_start']:
+                                        closest_change_index = change['orig_start_pos']
+                                        if change['action'] == 'substitute' or change['action'] == 'swap':
+                                            offset = change['new_start_pos'] - change['orig_start_pos'] + len(change['new_token']) - len(change['orig_token'])
+                                        else:
+                                            print(f"[debug] changelog failed. original: {original_context}\naugmented: {context}\nchangelog {changelog}, original answer start {answer['answer_start']}")
+                                            raise ValueError(f"Unimplemented offset for {change['action']}")
+                                answer_start = answer['answer_start'] + offset + start_fix
+                            substr = context[answer_start:answer_start+len(answer['text'])]
+                            if substr.lower() == answer['text'].lower():
+                                answer = {'answer_start': answer_start, 'text': answer['text']}
+                            else:
+                                rejected_augmented_samples += 1
+                                if not answer_modified:
+                                    print(f"[warning] expect context substring {substr} is answer {answer['text']}, ignored")
+                                    print(f"[debug] original: {original_context}\naugmented: {context}\nchangelog {changelog}, original answer start {answer['answer_start']}, new answer start {answer_start}")
+                                # continue
                             data_dict['question'].append(question)
                             data_dict['context'].append(context)
-                            data_dict['id'].append(qa['id'])
+                            data_dict['id'].append(qa_id)
                             data_dict['answer'].append(answer)
+    
+    print(f"total length: {len(data_dict['answer'])}")
+    print(f'[data augmentation] original: {total_original_samples}, total augmentation: {total_augmented_samples}, augmentation rejected: {rejected_augmented_samples}')
+    
     id_map = ddict(list)
     for idx, qid in enumerate(data_dict['id']):
         id_map[qid].append(idx)

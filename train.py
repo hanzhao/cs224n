@@ -5,7 +5,7 @@ from collections import OrderedDict
 import torch
 import csv
 import util
-import nlpaug.augmenter.word as naw
+import re
 from transformers import DistilBertTokenizerFast
 from transformers import DistilBertForQuestionAnswering
 from transformers import AdamW
@@ -17,6 +17,8 @@ from torch.utils.data.sampler import RandomSampler, SequentialSampler
 from args import get_train_test_args
 
 from tqdm import tqdm
+
+import augmenter
 
 def prepare_eval_data(dataset_dict, tokenizer):
     tokenized_examples = tokenizer(dataset_dict['question'],
@@ -52,6 +54,7 @@ def prepare_eval_data(dataset_dict, tokenizer):
 
 
 def prepare_train_data(dataset_dict, tokenizer):
+    print(f"preparing {len(dataset_dict['context'])} examples")
     tokenized_examples = tokenizer(dataset_dict['question'],
                                    dataset_dict['context'],
                                    truncation="only_second",
@@ -130,7 +133,14 @@ def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, spli
         util.save_pickle(tokenized_examples, cache_path)
     return tokenized_examples
 
+class Tokenizer:
+    @staticmethod
+    def tokenizer(text):
+        return text.split(' ')
 
+    @staticmethod
+    def reverse_tokenizer(tokens):
+        return ' '.join(tokens)
 
 #TODO: use a logger, use tensorboard
 class Trainer():
@@ -139,6 +149,7 @@ class Trainer():
         self.num_epochs = args.num_epochs
         self.device = args.device
         self.eval_every = args.eval_every
+        self.eval_after_epoch = args.eval_after_epoch
         self.path = os.path.join(args.save_dir, 'checkpoint')
         self.num_visuals = args.num_visuals
         self.save_dir = args.save_dir
@@ -218,7 +229,7 @@ class Trainer():
                     progress_bar.update(len(input_ids))
                     progress_bar.set_postfix(epoch=epoch_num, NLL=loss.item())
                     tbx.add_scalar('train/NLL', loss.item(), global_idx)
-                    if (global_idx % self.eval_every) == 0:
+                    if ((global_idx % self.eval_every) == 0 and not self.eval_after_epoch) or global_idx == 0:
                         self.log.info(f'Evaluating at step {global_idx}...')
                         preds, curr_score = self.evaluate(model, eval_dataloader, val_dict, return_preds=True)
                         results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
@@ -237,25 +248,47 @@ class Trainer():
                             best_scores = curr_score
                             self.save(model)
                     global_idx += 1
+                if self.eval_after_epoch:
+                    self.log.info(f'Evaluating at epoch {epoch_num}...')
+                    preds, curr_score = self.evaluate(model, eval_dataloader, val_dict, return_preds=True)
+                    results_str = ', '.join(f'{k}: {v:05.2f}' for k, v in curr_score.items())
+                    self.log.info('Visualizing in TensorBoard...')
+                    for k, v in curr_score.items():
+                        tbx.add_scalar(f'val/{k}', v, global_idx)
+                    self.log.info(f'Eval {results_str}')
+                    if self.visualize_predictions:
+                        util.visualize(tbx,
+                                        pred_dict=preds,
+                                        gold_dict=val_dict,
+                                        step=global_idx,
+                                        split='val',
+                                        num_visuals=self.num_visuals)
+                    if curr_score['F1'] >= best_scores['F1']:
+                        best_scores = curr_score
+                        self.save(model)
         return best_scores
 
-def get_dataset(args, datasets, data_dir, tokenizer, split_name):
+def get_dataset(args, datasets, data_dir, tokenizer, split_name, augmentation_enabled_datasets = {}, enabled_augmenters = []):
     datasets = datasets.split(',')
     dataset_dict = None
     dataset_name=''
     for dataset in datasets:
         dataset_name += f'_{dataset}'
         augmenters = []
-        if split_name == 'train':
-            augmenters = [
-                # Data Augmentation
-                # (naw.RandomWordAug(action="swap"), 10),
-                # (naw.SynonymAug(aug_src='wordnet'), 10),
-            ]
+        if split_name == 'train' and dataset in augmentation_enabled_datasets:
+            augmenters = enabled_augmenters
         dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}', augmenters)
+        print(f"dataset {dataset} has {len(dataset_dict_curr['question'])} examples")
         dataset_dict = util.merge(dataset_dict, dataset_dict_curr)
     data_encodings = read_and_process(args, tokenizer, dataset_dict, data_dir, dataset_name, split_name)
     return util.QADataset(data_encodings, train=(split_name=='train')), dataset_dict
+
+augmenter_dict = {
+    'synonym_wordnet': (augmenter.SynonymAug(aug_src='wordnet', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 3),
+    'random_swap': (augmenter.RandomWordAug(action='swap', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 3),
+    'wordembs_word2vec': (augmenter.WordEmbsAug(model_type='word2vec', model_path='./GoogleNews-vectors-negative300.bin', device='cuda', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 3),
+    'contextembs_distilbert': (augmenter.ContextualWordEmbsAug(model_path='distilbert-base-uncased', action="substitute", device='cuda', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 3),
+}
 
 def main():
     # define parser and arguments
@@ -277,7 +310,7 @@ def main():
         log.info("Preparing Training Data...")
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         trainer = Trainer(args, log)
-        train_dataset, _ = get_dataset(args, args.train_datasets, args.train_dir, tokenizer, 'train')
+        train_dataset, _ = get_dataset(args, args.train_datasets, args.train_dir, tokenizer, 'train', args.augmented_datasets, [augmenter_dict[aug_name] for aug_name in args.augmentation_methods.split(',')])
         log.info("Preparing Validation Data...")
         val_dataset, val_dict = get_dataset(args, args.train_datasets, args.val_dir, tokenizer, 'val')
         train_loader = DataLoader(train_dataset,
