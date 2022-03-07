@@ -273,7 +273,7 @@ def get_dataset(args, datasets, data_dir, tokenizer, split_name, augmentation_en
     dataset_dict = None
     dataset_name=''
     for dataset in datasets:
-        dataset_name += f'_{dataset}'
+        dataset_name += f'_{dataset.replace("/", "_")}'
         augmenters = []
         if split_name == 'train' and dataset in augmentation_enabled_datasets:
             augmenters = enabled_augmenters
@@ -310,25 +310,27 @@ def main():
         log.info("Preparing Training Data...")
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         trainer = Trainer(args, log)
-        train_dataset, _ = get_dataset(args, args.train_datasets, args.train_dir, tokenizer, 'train', args.augmented_datasets, [augmenter_dict[aug_name] for aug_name in args.augmentation_methods.split(',')])
+        augmenters = [augmenter_dict[aug_name] for aug_name in args.augment_methods.split(',') if aug_name]
+        train_dataset, _ = get_dataset(
+            args, args.train_datasets, args.data_dir, tokenizer, 'train', args.augment_datasets, augmenters)
         log.info("Preparing Validation Data...")
-        val_dataset, val_dict = get_dataset(args, args.train_datasets, args.val_dir, tokenizer, 'val')
+        val_dataset, val_dict = get_dataset(args, args.eval_datasets, args.data_dir, tokenizer, 'val')
         train_loader = DataLoader(train_dataset,
-                                batch_size=args.batch_size,
-                                sampler=RandomSampler(train_dataset))
+                                  batch_size=args.batch_size,
+                                  sampler=RandomSampler(train_dataset))
         val_loader = DataLoader(val_dataset,
                                 batch_size=args.batch_size,
                                 sampler=SequentialSampler(val_dataset))
         best_scores = trainer.train(model, train_loader, val_loader, val_dict)
     if args.do_eval:
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        split_name = 'test' if 'test' in args.eval_dir else 'validation'
+        split_name = 'test' if 'test' in args.eval_datasets else 'validation'
         log = util.get_logger(args.save_dir, f'log_{split_name}')
         trainer = Trainer(args, log)
         checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
         model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
         model.to(args.device)
-        eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name)
+        eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.data_dir, tokenizer, split_name)
         eval_loader = DataLoader(eval_dataset,
                                  batch_size=args.batch_size,
                                  sampler=SequentialSampler(eval_dataset))
