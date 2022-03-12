@@ -408,7 +408,7 @@ def postprocess_qa_predictions(examples, features, predictions,
             # We grab the predictions of the model for this feature.
             start_logits = all_start_logits[feature_index]
             end_logits = all_end_logits[feature_index]
-            seq_ids = features.sequence_ids(feature_index)
+            seq_ids = features['sequence_ids'][feature_index]
             non_pad_idx = len(seq_ids) - 1
             while not seq_ids[non_pad_idx]:
                 non_pad_idx -= 1
