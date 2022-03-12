@@ -31,6 +31,8 @@ def prepare_eval_data(dataset_dict, tokenizer):
                                    padding='max_length')
     # Since one example might give us several features if it has a long context, we need a map from a feature to
     # its corresponding example. This key gives us just that.
+    # INFO: overflow_to_sample_mapping is popped because it is not needed for eval.
+    # For eval we use qid to refer back to original QA.
     sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
 
     # For evaluation, we will need to convert our predictions to substrings of the context, so we keep the
@@ -44,6 +46,8 @@ def prepare_eval_data(dataset_dict, tokenizer):
         tokenized_examples["id"].append(dataset_dict["id"][sample_index])
         # Set to None the offset_mapping that are not part of the context so it's easy to determine if a token
         # position is part of the context or not.
+        # INFO: this modification to offset_mapping is a way to completely rule out
+        # answering attempts at non-context segments.
         tokenized_examples["offset_mapping"][i] = [
             (o if sequence_ids[k] == 1 else None)
             for k, o in enumerate(tokenized_examples["offset_mapping"][i])
@@ -67,6 +71,8 @@ def prepare_train_data(dataset_dict, tokenizer):
     offset_mapping = tokenized_examples["offset_mapping"]
 
     # Let's label those examples!
+    # TODO(shan): be aware of the shifting indices due to segmentation
+    # TODO(chen): use the accuracy check after prompt/demo.
     tokenized_examples["start_positions"] = []
     tokenized_examples["end_positions"] = []
     tokenized_examples['id'] = []
@@ -123,6 +129,7 @@ def prepare_train_data(dataset_dict, tokenizer):
 def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, split):
     #TODO: cache this if possible
     cache_path = f'{dir_name}/{dataset_name}_encodings.pt'
+    tokenized_examples_train_for_test = None
     if os.path.exists(cache_path) and not args.recompute_features:
         tokenized_examples = util.load_pickle(cache_path)
     else:
@@ -130,8 +137,10 @@ def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, spli
             tokenized_examples = prepare_train_data(dataset_dict, tokenizer)
         else:
             tokenized_examples = prepare_eval_data(dataset_dict, tokenizer)
+            if args.in_context and args.use_demo:
+              tokenized_examples_train_for_test = prepare_train_data(dataset_dict, tokenizer)
         util.save_pickle(tokenized_examples, cache_path)
-    return tokenized_examples
+    return tokenized_examples, tokenized_examples_train_for_test
 
 class Tokenizer:
     @staticmethod
@@ -280,9 +289,17 @@ def get_dataset(args, datasets, data_dir, tokenizer, split_name, augmentation_en
         dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}', augmenters)
         print(f"dataset {dataset} has {len(dataset_dict_curr['question'])} examples")
         dataset_dict = util.merge(dataset_dict, dataset_dict_curr)
-    data_encodings = read_and_process(args, tokenizer, dataset_dict, data_dir, dataset_name, split_name)
-    return util.QADataset(data_encodings, train=(split_name=='train')), dataset_dict
-
+    # INFO: data_encodings['input_ids']: pair of sequences: `[CLS] A [SEP] B [SEP]`
+    data_encodings, qa_data_encodings_features_train_for_test = read_and_process(args, tokenizer, dataset_dict, data_dir, dataset_name, split_name)
+    # TODO(chen): perform query sampling, demonstration, etc
+    # process the data_encodings to retrofit into a template. No need to encode again for sentences since they are already encoded by a basic DistilBertTokenizer.
+    if args.in_context:
+        mode = split_name
+        if split_name == 'validation' or split_name == 'val':
+          mode = 'dev'
+        return FewShotDataset(args, tokenizer, data_encodings, qa_data_encodings_features_train_for_test, dataset_dict, cache_dir=None, mode=mode, use_demo=False), dataset_dict
+    else:
+        return util.QADataset(data_encodings, train=(split_name=='train')), dataset_dict
 augmenter_dict = {
     'synonym_wordnet': (augmenter.SynonymAug(aug_src='wordnet', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 3),
     'random_swap': (augmenter.RandomWordAug(action='swap', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 3),
@@ -321,6 +338,8 @@ def main():
         val_loader = DataLoader(val_dataset,
                                 batch_size=args.batch_size,
                                 sampler=SequentialSampler(val_dataset))
+        # INFO: Always resize model after get_dataset for new tokens has been added.
+        model.resize_token_embeddings(len(tokenizer))
         best_scores = trainer.train(model, train_loader, val_loader, val_dict)
     if args.do_eval:
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -334,6 +353,8 @@ def main():
         eval_loader = DataLoader(eval_dataset,
                                  batch_size=args.batch_size,
                                  sampler=SequentialSampler(eval_dataset))
+        # INFO: Always resize model after get_dataset for new tokens has been added.
+        model.resize_token_embeddings(len(tokenizer))
         eval_preds, eval_scores = trainer.evaluate(model, eval_loader,
                                                    eval_dict, return_preds=True,
                                                    split=split_name)
@@ -351,3 +372,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
