@@ -979,54 +979,6 @@ class FewShotDataset(torch.utils.data.Dataset):
                 logger.info("prompt_offset_end_position: %s" % features['end_positions'])
                 logger.info("answer text: %s" % self.tokenizer.decode(features['input_ids'][(features['start_positions'] - 1):(features['end_positions'])]))
                 logger.info("overflow_to_sample_mapping: %s" % features['overflow_to_sample_mapping'])
-                # TODO(chen): test accuracy here with the offset versions!!!
-
-    # for i, offsets in enumerate(tqdm(offset_mapping)):
-    #     # We will label impossible answers with the index of the CLS token.
-    #     input_ids = tokenized_examples["input_ids"][i]
-    #     cls_index = input_ids.index(tokenizer.cls_token_id)
-
-    #     # Grab the sequence corresponding to that example (to know what is the context and what is the question).
-    #     sequence_ids = tokenized_examples.sequence_ids(i)
-
-    #     # One example can give several spans, this is the index of the example containing this span of text.
-    #     sample_index = sample_mapping[i]
-    #     answer = dataset_dict['answer'][sample_index]
-    #     # Start/end character index of the answer in the text.
-    #     start_char = answer['answer_start'][0]
-    #     end_char = start_char + len(answer['text'][0])
-    #     tokenized_examples['id'].append(dataset_dict['id'][sample_index])
-    #     # Start token index of the current span in the text.
-    #     token_start_index = 0
-    #     while sequence_ids[token_start_index] != 1:
-    #         token_start_index += 1
-
-    #     # End token index of the current span in the text.
-    #     token_end_index = len(input_ids) - 1
-    #     while sequence_ids[token_end_index] != 1:
-    #         token_end_index -= 1
-
-    #     # Detect if the answer is out of the span (in which case this feature is labeled with the CLS index).
-    #     if not (offsets[token_start_index][0] <= start_char and offsets[token_end_index][1] >= end_char):
-    #         tokenized_examples["start_positions"].append(cls_index)
-    #         tokenized_examples["end_positions"].append(cls_index)
-    #     else:
-    #         # Otherwise move the token_start_index and token_end_index to the two ends of the answer.
-    #         # Note: we could go after the last offset if the answer is the last word (edge case).
-    #         while token_start_index < len(offsets) and offsets[token_start_index][0] <= start_char:
-    #             token_start_index += 1
-    #         tokenized_examples["start_positions"].append(token_start_index - 1)
-    #         while offsets[token_end_index][1] >= end_char:
-    #             token_end_index -= 1
-    #         tokenized_examples["end_positions"].append(token_end_index + 1)
-    #         # assertion to check if this checks out
-    #         context = dataset_dict['context'][sample_index]
-    #         offset_st = offsets[tokenized_examples['start_positions'][-1]][0]
-    #         offset_en = offsets[tokenized_examples['end_positions'][-1]][1]
-    #         if context[offset_st : offset_en] != answer['text'][0]:
-    #             inaccurate += 1
-    # total = len(tokenized_examples['id'])
-    # print(f"Preprocessing not completely accurate for {inaccurate}/{total} instances")
-
+                # TODO(chen): test accuracy here with the offset versions.
 
         return features
