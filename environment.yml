@@ -8,7 +8,7 @@ dependencies:
   - cudatoolkit=11.3
   - numpy
   - tqdm
-  - pytorch
+  - pytorch=1.10.2
   - pip:
     - tqdm==4.62.3
     - transformers==4.16.2
@@ -17,3 +17,4 @@ dependencies:
     - tensorboardX
     - nlpaug
     - gensim
+    - sentence_transformers
