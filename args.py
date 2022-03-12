@@ -24,5 +24,16 @@ def get_train_test_args():
     parser.add_argument('--eval-every', type=int, default=5000)
     parser.add_argument('--eval-after-epoch', action='store_true')
     parser.add_argument('--augment-methods', type=str, default='')
+    # in-context
+    parser.add_argument('--in-context', action='store_true')
+    parser.add_argument('--double-demo', action='store_true')
+    parser.add_argument('--max-seq-length', type=int, default=512)
+    parser.add_argument('--num-sample', type=int, default=16)
+    parser.add_argument('--mapping', type=str, default="{str(i):str(i) for i in range(512)}")
+    parser.add_argument('--prompt', action='store_true')
+    parser.add_argument('--template-list', type=str, default=None)
+    parser.add_argument('--template', type=str, default="*cls**sent_0*_?_answer_starts_at*mask*_and_ends_at*mask**sep**sent_1**sep+*")
+    parser.add_argument('--use-demo', action='store_true')
+    parser.add_argument('--demo-filter', action='store_true')
     args = parser.parse_args()
     return args
