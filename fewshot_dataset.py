@@ -201,7 +201,7 @@ def tokenize_multipart_input(
                 new_tokens += input_text_list[sent_id]
                 # INFO: record the the original <sep> index as reference for offset.
                 if sent_id == 0:
-                    original_sep = len(new_tokens)
+                    original_sep = len(new_tokens) + len(input_ids)
             elif part[:6] == '+sent_':
                 # Add space
                 sent_id = int(part.split('_')[1])
@@ -966,14 +966,14 @@ class FewShotDataset(torch.utils.data.Dataset):
 
         if verbose:
             logger.info("*** Example ***")
-            logger.info("id: %s" % (features['id']))
+            logger.info("id has length %s with content: %s", len(features['id']), features['id'])
             # logger.info("features: %s" % features)
             # logger.info("text: %s" % self.tokenizer.decode(features.input_ids))
-            logger.info("input_ids text: %s" % self.tokenizer.decode(features['input_ids']))
-            # logger.info("index to word: %s" % [[i, self.tokenizer.decode(features['input_ids'][i])] for i in range(len(features['input_ids']))])
-            logger.info("attention_mask: %s" % features['attention_mask'])
-            logger.info("offset_mapping: %s" % features['offset_mapping'])
-            logger.info("sequence_ids: %s" % features['sequence_ids'])
+            # logger.info("input_ids text: %s" % self.tokenizer.decode(features['input_ids']))
+            logger.info("index to word has length %s and content: %s", len(features['input_ids']), [[i, self.tokenizer.decode(features['input_ids'][i])] for i in range(len(features['input_ids']))])
+            logger.info("attention_mask has length %s and content: %s", len(features['attention_mask']), features['attention_mask'])
+            logger.info("offset_mapping has length %s and content: %s", len(features['offset_mapping']), features['offset_mapping'])
+            logger.info("sequence_ids has length %s and content: %s", len(features['sequence_ids']), features['sequence_ids'])
             if 'start_positions' in features:
                 logger.info("prompt_offset_start_position: %s" % features['start_positions'])
                 logger.info("prompt_offset_end_position: %s" % features['end_positions'])
