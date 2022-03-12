@@ -301,10 +301,10 @@ def get_dataset(args, datasets, data_dir, tokenizer, split_name, augmentation_en
     else:
         return util.QADataset(data_encodings, train=(split_name=='train')), dataset_dict
 augmenter_dict = {
-    'synonym_wordnet': (augmenter.SynonymAug(aug_src='wordnet', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 3),
-    'random_swap': (augmenter.RandomWordAug(action='swap', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 3),
-    'wordembs_word2vec': (augmenter.WordEmbsAug(model_type='word2vec', model_path='./GoogleNews-vectors-negative300.bin', device='cuda', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 3),
-    'contextembs_distilbert': (augmenter.ContextualWordEmbsAug(model_path='distilbert-base-uncased', action="substitute", device='cuda', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 3),
+    'synonym_wordnet': (augmenter.SynonymAug(aug_src='wordnet', tokenizer=Tokenizer.tokenizer, aug_min=1, aug_max=30, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 10),
+    'random_swap': (augmenter.RandomWordAug(action='swap', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 5),
+    # 'wordembs_word2vec': (augmenter.WordEmbsAug(model_type='word2vec', model_path='./GoogleNews-vectors-negative300.bin', device='cpu', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 5),
+    # 'contextembs_distilbert': (augmenter.ContextualWordEmbsAug(model_path='distilbert-base-uncased', action="substitute", device='cpu', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 25),
 }
 
 def main():

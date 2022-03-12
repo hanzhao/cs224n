@@ -263,16 +263,20 @@ def read_squad(path, augmenters = []):
                                         else:
                                             print(f"[debug] changelog failed. original: {original_context}\naugmented: {context}\nchangelog {changelog}, original answer start {answer['answer_start']}")
                                             raise ValueError(f"Unimplemented offset for {change['action']}")
-                                answer_start = answer['answer_start'] + offset + start_fix
+                                answer_start = -101
+                                if 'answer_start' in answer:
+                                    answer_start = answer['answer_start'] + offset + start_fix
                             substr = context[answer_start:answer_start+len(answer['text'])]
-                            if substr.lower() == answer['text'].lower():
+                            if answer_start == -101:
+                                answer = {'answer_start': -1, 'text': answer['text']}
+                            elif substr.lower() == answer['text'].lower():
                                 answer = {'answer_start': answer_start, 'text': answer['text']}
                             else:
                                 rejected_augmented_samples += 1
                                 if not answer_modified:
                                     print(f"[warning] expect context substring {substr} is answer {answer['text']}, ignored")
-                                    print(f"[debug] original: {original_context}\naugmented: {context}\nchangelog {changelog}, original answer start {answer['answer_start']}, new answer start {answer_start}")
-                                # continue
+                                    # print(f"[debug] original: {original_context}\naugmented: {context}\nchangelog {changelog}, original answer start {answer['answer_start']}, new answer start {answer_start}")
+                                continue
                             data_dict['question'].append(question)
                             data_dict['context'].append(context)
                             data_dict['id'].append(qa_id)
