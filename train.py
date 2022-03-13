@@ -191,7 +191,7 @@ class Trainer():
                 mask_pos = batch['mask_pos'].to(device)
                 batch_size = len(input_ids)
                 if self.args == 'mlm_qa':
-                    outputs = model(input_ids, attention_mask=attention_mask(), mask_pos=mask_pos)
+                    outputs = model(input_ids, attention_mask=attention_mask, mask_pos=mask_pos)
                     start_logits, end_logits = outputs.start_logits, outputs.end_logits
                 else:
                     outputs = model(input_ids, attention_mask=attention_mask, return_dict = False)
