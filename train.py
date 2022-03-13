@@ -47,6 +47,8 @@ def prepare_eval_data(dataset_dict, tokenizer):
         tokenized_examples["id"].append(dataset_dict["id"][sample_index])
         # Set to None the offset_mapping that are not part of the context so it's easy to determine if a token
         # position is part of the context or not.
+        # INFO: this modification to offset_mapping is a way to completely rule out
+        # answering attempts at non-context segments.
         tokenized_examples["offset_mapping"][i] = [
             (o if sequence_ids[k] == 1 else None)
             for k, o in enumerate(tokenized_examples["offset_mapping"][i])
@@ -70,8 +72,8 @@ def prepare_train_data(dataset_dict, tokenizer):
     offset_mapping = tokenized_examples["offset_mapping"]
 
     # Let's label those examples!
-    # INFO: this modification to offset_mapping is a way to completely rule out
-    # answering attempts at non-context segments.
+    # TODO(shan): be aware of the shifting indices due to segmentation
+    # TODO(chen): use the accuracy check after prompt/demo.
     tokenized_examples["start_positions"] = []
     tokenized_examples["end_positions"] = []
     tokenized_examples['id'] = []
