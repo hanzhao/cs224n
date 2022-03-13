@@ -176,7 +176,7 @@ class Trainer():
 
     def evaluate(self, model, data_loader, data_dict, return_preds=False, split='validation'):
         device = self.device
-        if self.args == 'mlm_qa':
+        if self.args.model == 'mlm_qa':
             model.label_word_list = torch.tensor(data_loader.dataset.label_word_list).long().to(device)
         model.eval()
         pred_dict = {}
@@ -190,7 +190,7 @@ class Trainer():
                 attention_mask = batch['attention_mask'].to(device)
                 mask_pos = batch['mask_pos'].to(device)
                 batch_size = len(input_ids)
-                if self.args == 'mlm_qa':
+                if self.args.model == 'mlm_qa':
                     outputs = model(input_ids, attention_mask=attention_mask, mask_pos=mask_pos)
                     start_logits, end_logits = outputs.start_logits, outputs.end_logits
                 else:
@@ -247,7 +247,7 @@ class Trainer():
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
                                         end_positions=end_positions, decay_alpha=True, mask_inputs=True)
-                    elif self.args == 'mlm_qa':
+                    elif self.args.model == 'mlm_qa':
                         outputs = model(input_ids, attention_mask=attention_mask, mask_pos=mask_pos,
                                         start_positions=start_positions,
                                         end_positions=end_positions)
@@ -419,7 +419,7 @@ def main():
                                 sampler=SequentialSampler(val_dataset))
         # INFO: Always resize model after get_dataset for new tokens has been added.
         # populate label_word_list
-        if args == 'mlm_qa':
+        if args.model == 'mlm_qa':
             model.label_word_list = torch.tensor(train_dataset.label_word_list).long().to(args.device)
         model.resize_token_embeddings(len(tokenizer))
         best_scores = trainer.train(model, train_loader, val_loader, val_dict)
