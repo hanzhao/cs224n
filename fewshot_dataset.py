@@ -17,7 +17,6 @@ import dataclasses
 from dataclasses import dataclass
 from typing import List, Optional, Union
 from sentence_transformers import SentenceTransformer, util
-from sentence_transformers import SentenceTransformer
 from copy import deepcopy
 import pandas as pd
 
