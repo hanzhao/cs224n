@@ -175,7 +175,8 @@ class Trainer():
 
     def evaluate(self, model, data_loader, data_dict, return_preds=False, split='validation'):
         device = self.device
-        model.label_word_list = torch.tensor(data_loader.dataset.label_word_list).long().to(device)
+        if self.args == 'mlm_qa':
+            model.label_word_list = torch.tensor(data_loader.dataset.label_word_list).long().to(device)
         model.eval()
         pred_dict = {}
         all_start_logits = []
@@ -406,7 +407,8 @@ def main():
                                 sampler=SequentialSampler(val_dataset))
         # INFO: Always resize model after get_dataset for new tokens has been added.
         # populate label_word_list
-        model.label_word_list = torch.tensor(train_dataset.label_word_list).long().to(args.device)
+        if args == 'mlm_qa':
+            model.label_word_list = torch.tensor(train_dataset.label_word_list).long().to(args.device)
         model.resize_token_embeddings(len(tokenizer))
         best_scores = trainer.train(model, train_loader, val_loader, val_dict)
         if args.model == 'mlm':
