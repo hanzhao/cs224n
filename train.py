@@ -167,6 +167,7 @@ class Trainer():
         self.save_dir = args.save_dir
         self.log = log
         self.visualize_predictions = args.visualize_predictions
+        self.max_answer_length =  args.max_answer_length
         if not os.path.exists(self.path):
             os.makedirs(self.path)
 
@@ -209,7 +210,8 @@ class Trainer():
         end_logits = torch.cat(all_end_logits).cpu().numpy()
         preds = util.postprocess_qa_predictions(data_dict,
                                                  data_loader.dataset.encodings,
-                                                 (start_logits, end_logits))
+                                                 (start_logits, end_logits),
+                                                 max_answer_length=self.max_answer_length)
         if split == 'validation':
             results = util.eval_dicts(data_dict, preds)
             results_list = [('F1', results['F1']),
@@ -334,7 +336,7 @@ def get_augmenter(name):
     if name == 'random_swap':
         return naw.RandomWordAug(action='swap', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer)
     if name == 'random_delete':
-        return naw.RandomWordAug(action='delelte', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer)
+        return naw.RandomWordAug(action='delete', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer)
     # 10.44s
     if name == 'wordembs_word2vec':
         # Slow
@@ -368,6 +370,16 @@ def main():
     if args.model == 'bert':
         if args.checkpoint_path:
             model = DistilBertForQuestionAnswering.from_pretrained(args.checkpoint_path)
+            if args.freeze_layers is not None:
+                for name, param in model.named_parameters():
+                    if name.startswith('distilbert.embeddings.'):
+                        param.requires_grad = False
+                        print(f'[DEBUG] freeze {name}')
+                        continue
+                    for i in range(args.freeze_layers + 1):
+                        if name.startswith(f'distilbert.transformer.layer.{i}.'):
+                            param.requires_grad = False
+                            print(f'[DEBUG] freeze {name}')
         else:
             model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
     elif args.model == 'mlm':
@@ -377,7 +389,7 @@ def main():
             model = MLMModel.from_pretrained('distilbert-base-uncased')
         model.set_mask_token(tokenizer.mask_token_id)
         model.add_vocab_size(vocab_size)
-    elif args.model == 'mlm_qa'
+    elif args.model == 'mlm_qa':
         if args.checkpoint_path:
             model = DistilBertForMaskedLMQA.from_pretrained(args.checkpoint_path)
         else:

@@ -277,8 +277,10 @@ def read_squad(path, augmenters = []):
         data_dict_collapsed['id'].append(qid)
         if data_dict['answer']:
             all_answers = [data_dict['answer'][idx] for idx in ex_ids]
-            data_dict_collapsed['answer'].append({'answer_start': [answer['answer_start'] for answer in all_answers],
-                                                  'text': [answer['text'] for answer in all_answers]})
+            data_dict_collapsed['answer'].append({
+                'answer_start': [answer['answer_start'] if 'answer_start' in answer else None for answer in all_answers],
+                'text': [answer['text'] for answer in all_answers]
+            })
     return data_dict_collapsed
 
 def add_token_positions(encodings, answers, tokenizer):

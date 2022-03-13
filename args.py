@@ -26,6 +26,8 @@ def get_train_test_args():
     parser.add_argument('--eval-every', type=int, default=5000)
     parser.add_argument('--eval-after-epoch', action='store_true')
     parser.add_argument('--augment-methods', type=str, default='')
+    parser.add_argument('--freeze-layers', type=int, default=None)
+    parser.add_argument('--max-answer-length', type=int, default=30)
     # in-context
     parser.add_argument('--in-context', action='store_true')
     parser.add_argument('--double-demo', action='store_true')
