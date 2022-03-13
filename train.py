@@ -20,6 +20,7 @@ from args import get_train_test_args
 from tqdm import tqdm
 
 import nlpaug.augmenter.word as naw
+from dlbert_mlm_qa import DistilBertForMaskedLMQA
 
 def prepare_eval_data(dataset_dict, tokenizer):
     tokenized_examples = tokenizer(dataset_dict['question'],
@@ -155,6 +156,7 @@ class Tokenizer:
 #TODO: use a logger, use tensorboard
 class Trainer():
     def __init__(self, args, log):
+        self.args = args
         self.lr = args.lr
         self.num_epochs = args.num_epochs
         self.device = args.device
@@ -173,7 +175,7 @@ class Trainer():
 
     def evaluate(self, model, data_loader, data_dict, return_preds=False, split='validation'):
         device = self.device
-
+        model.label_word_list = torch.tensor(data_loader.dataset.label_word_list).long().to(device)
         model.eval()
         pred_dict = {}
         all_start_logits = []
@@ -184,13 +186,18 @@ class Trainer():
                 # Setup for forward
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
+                mask_pos = batch['mask_pos'].to(device)
                 batch_size = len(input_ids)
-                outputs = model(input_ids, attention_mask=attention_mask, return_dict = False)
-                # Forward
-                if (len(outputs) > 2):
-                    start_logits, end_logits = outputs[1], outputs[2]
+                if self.args == 'mlm_qa':
+                    outputs = model(input_ids, attention_mask=attention_mask(), mask_pos=mask_pos)
+                    start_logits, end_logits = outputs.start_logits, outputs.end_logits
                 else:
-                    start_logits, end_logits = outputs[0], outputs[1] # when no loss can be computed
+                    outputs = model(input_ids, attention_mask=attention_mask, return_dict = False)
+                    # Forward
+                    if (len(outputs) > 2):
+                        start_logits, end_logits = outputs[1], outputs[2]
+                    else:
+                        start_logits, end_logits = outputs[0], outputs[1] # when no loss can be computed
                 # TODO: compute loss
                 all_start_logits.append(start_logits)
                 all_end_logits.append(end_logits)
@@ -214,7 +221,7 @@ class Trainer():
             return preds, results
         return results
 
-    def train(self, model, train_dataloader, eval_dataloader, val_dict, model_type):
+    def train(self, model, train_dataloader, eval_dataloader, val_dict):
         device = self.device
         model.to(device)
         optim = AdamW(model.parameters(), lr=self.lr)
@@ -232,10 +239,15 @@ class Trainer():
                     attention_mask = batch['attention_mask'].to(device)
                     start_positions = batch['start_positions'].to(device)
                     end_positions = batch['end_positions'].to(device)
-                    if model_type == "mlm":
+                    mask_pos = batch['mask_pos'].to(device)
+                    if self.args == "mlm":
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
                                         end_positions=end_positions, decay_alpha=True, mask_inputs=True)
+                    elif self.args == 'mlm_qa':
+                        outputs = model(input_ids, attention_mask=attention_mask, mask_pos=mask_pos,
+                                        start_positions=start_positions,
+                                        end_positions=end_positions)
                     else:
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
@@ -364,6 +376,11 @@ def main():
             model = MLMModel.from_pretrained('distilbert-base-uncased')
         model.set_mask_token(tokenizer.mask_token_id)
         model.add_vocab_size(vocab_size)
+    elif args.model == 'mlm_qa'
+        if args.checkpoint_path:
+            model = DistilBertForMaskedLMQA.from_pretrained(args.checkpoint_path)
+        else:
+            model = DistilBertForMaskedLMQA.from_pretrained("distilbert-base-uncased")
     else:
         raise ValueError('--model parameter must be one of the following:{"bert", "mlm"}')
 
@@ -388,6 +405,8 @@ def main():
                                 batch_size=args.batch_size,
                                 sampler=SequentialSampler(val_dataset))
         # INFO: Always resize model after get_dataset for new tokens has been added.
+        # populate label_word_list
+        model.label_word_list = torch.tensor(train_dataset.label_word_list).long().to(args.device)
         model.resize_token_embeddings(len(tokenizer))
         best_scores = trainer.train(model, train_loader, val_loader, val_dict)
         if args.model == 'mlm':
@@ -397,7 +416,7 @@ def main():
             alphas = get_alphas(alpha_start, alpha_end, n_steps, "linear")
             model.set_alphas(alphas)
 
-        best_scores = trainer.train(model, train_loader, val_loader, val_dict, args.model)
+        best_scores = trainer.train(model, train_loader, val_loader, val_dict)
     if args.do_eval:
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         split_name = 'test' if 'test' in args.eval_datasets else 'validation'
@@ -406,6 +425,8 @@ def main():
         checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
         if args.model == 'mlm':
             model = MLMModel.from_pretrained(checkpoint_path)
+        elif args.model == 'mlm_qa':
+            model = DistilBertForMaskedLMQA.from_pretrained(checkpoint_path)
         elif args.model == 'bert':
             model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
         model.to(args.device)
