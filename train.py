@@ -10,7 +10,7 @@ from transformers import DistilBertTokenizerFast
 from transformers import DistilBertForQuestionAnswering
 from transformers import AdamW
 from tensorboardX import SummaryWriter
-from fewshot_dataset import FewShotDataset
+from model import MLMModel
 
 from torch.utils.data import DataLoader
 from torch.utils.data.sampler import RandomSampler, SequentialSampler
@@ -18,7 +18,7 @@ from args import get_train_test_args
 
 from tqdm import tqdm
 
-import nlpaug.augmenter.word as naw
+import augmenter
 
 def prepare_eval_data(dataset_dict, tokenizer):
     tokenized_examples = tokenizer(dataset_dict['question'],
@@ -31,8 +31,6 @@ def prepare_eval_data(dataset_dict, tokenizer):
                                    padding='max_length')
     # Since one example might give us several features if it has a long context, we need a map from a feature to
     # its corresponding example. This key gives us just that.
-    # INFO: overflow_to_sample_mapping is popped because it is not needed for eval.
-    # For eval we use qid to refer back to original QA.
     sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
 
     # For evaluation, we will need to convert our predictions to substrings of the context, so we keep the
@@ -46,8 +44,6 @@ def prepare_eval_data(dataset_dict, tokenizer):
         tokenized_examples["id"].append(dataset_dict["id"][sample_index])
         # Set to None the offset_mapping that are not part of the context so it's easy to determine if a token
         # position is part of the context or not.
-        # INFO: this modification to offset_mapping is a way to completely rule out
-        # answering attempts at non-context segments.
         tokenized_examples["offset_mapping"][i] = [
             (o if sequence_ids[k] == 1 else None)
             for k, o in enumerate(tokenized_examples["offset_mapping"][i])
@@ -71,8 +67,6 @@ def prepare_train_data(dataset_dict, tokenizer):
     offset_mapping = tokenized_examples["offset_mapping"]
 
     # Let's label those examples!
-    # TODO(shan): be aware of the shifting indices due to segmentation
-    # TODO(chen): use the accuracy check after prompt/demo.
     tokenized_examples["start_positions"] = []
     tokenized_examples["end_positions"] = []
     tokenized_examples['id'] = []
@@ -129,7 +123,6 @@ def prepare_train_data(dataset_dict, tokenizer):
 def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, split):
     #TODO: cache this if possible
     cache_path = f'{dir_name}/{dataset_name}_encodings.pt'
-    tokenized_examples_train_for_test = None
     if os.path.exists(cache_path) and not args.recompute_features:
         tokenized_examples = util.load_pickle(cache_path)
     else:
@@ -137,10 +130,8 @@ def read_and_process(args, tokenizer, dataset_dict, dir_name, dataset_name, spli
             tokenized_examples = prepare_train_data(dataset_dict, tokenizer)
         else:
             tokenized_examples = prepare_eval_data(dataset_dict, tokenizer)
-            if args.in_context and args.use_demo:
-              tokenized_examples_train_for_test = prepare_train_data(dataset_dict, tokenizer)
         util.save_pickle(tokenized_examples, cache_path)
-    return tokenized_examples, tokenized_examples_train_for_test
+    return tokenized_examples
 
 class Tokenizer:
     @staticmethod
@@ -184,11 +175,12 @@ class Trainer():
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
                 batch_size = len(input_ids)
-                outputs = model(input_ids, attention_mask=attention_mask)
-                # Forward
-                start_logits, end_logits = outputs.start_logits, outputs.end_logits
+                outputs = model(input_ids, attention_mask=attention_mask, return_dict = False)
+                if (len(outputs) > 2):
+                    start_logits, end_logits = outputs[1], outputs[2]
+                else:
+                    start_logits, end_logits = outputs[0], outputs[1] # when no loss can be computed
                 # TODO: compute loss
-
                 all_start_logits.append(start_logits)
                 all_end_logits.append(end_logits)
                 progress_bar.update(batch_size)
@@ -211,7 +203,7 @@ class Trainer():
             return preds, results
         return results
 
-    def train(self, model, train_dataloader, eval_dataloader, val_dict):
+    def train(self, model, train_dataloader, eval_dataloader, val_dict, model_type):
         device = self.device
         model.to(device)
         optim = AdamW(model.parameters(), lr=self.lr)
@@ -229,9 +221,14 @@ class Trainer():
                     attention_mask = batch['attention_mask'].to(device)
                     start_positions = batch['start_positions'].to(device)
                     end_positions = batch['end_positions'].to(device)
-                    outputs = model(input_ids, attention_mask=attention_mask,
-                                    start_positions=start_positions,
-                                    end_positions=end_positions)
+                    if model_type == "mlm":
+                        outputs = model(input_ids, attention_mask=attention_mask,
+                                        start_positions=start_positions,
+                                        end_positions=end_positions, decay_alpha=True, mask_inputs=True)
+                    else:
+                        outputs = model(input_ids, attention_mask=attention_mask,
+                                        start_positions=start_positions,
+                                        end_positions=end_positions)
                     loss = outputs[0]
                     loss.backward()
                     optim.step()
@@ -277,67 +274,58 @@ class Trainer():
                         self.save(model)
         return best_scores
 
-def get_dataset(args, datasets, data_dir, tokenizer, split_name, augment_datasets = {}, augmenters = []):
+def get_dataset(args, datasets, data_dir, tokenizer, split_name, augmentation_enabled_datasets = {}, enabled_augmenters = []):
     datasets = datasets.split(',')
     dataset_dict = None
     dataset_name=''
     for dataset in datasets:
-        dataset_name += f'_{dataset.replace("/", "_")}'
-        dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}', augmenters if split_name == 'train' and dataset in augment_datasets else [])
+        dataset_name += f'_{dataset}'
+        augmenters = []
+        if split_name == 'train' and dataset in augmentation_enabled_datasets:
+            augmenters = enabled_augmenters
+        dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}', augmenters)
         print(f"dataset {dataset} has {len(dataset_dict_curr['question'])} examples")
         dataset_dict = util.merge(dataset_dict, dataset_dict_curr)
-    # INFO: data_encodings['input_ids']: pair of sequences: `[CLS] A [SEP] B [SEP]`
-    data_encodings, qa_data_encodings_features_train_for_test = read_and_process(args, tokenizer, dataset_dict, data_dir, dataset_name, split_name)
-    # TODO(chen): perform query sampling, demonstration, etc
-    # process the data_encodings to retrofit into a template. No need to encode again for sentences since they are already encoded by a basic DistilBertTokenizer.
-    if args.in_context:
-        mode = split_name
-        if split_name == 'validation' or split_name == 'val':
-          mode = 'dev'
-        return FewShotDataset(args, tokenizer, data_encodings, qa_data_encodings_features_train_for_test, dataset_dict, cache_dir=None, mode=mode, use_demo=False), dataset_dict
-    else:
-        return util.QADataset(data_encodings, train=(split_name=='train')), dataset_dict
+    data_encodings = read_and_process(args, tokenizer, dataset_dict, data_dir, dataset_name, split_name)
+    return util.QADataset(data_encodings, train=(split_name=='train')), dataset_dict
 
-def get_augmenter(name):
-    # 1.06s
-    if name == 'synonym_wordnet':
-        return naw.SynonymAug(aug_src='wordnet', aug_min=1, aug_max=30, aug_p=0.3, tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer)
-    # 0.0014s
-    if name == 'random_swap':
-        return naw.RandomWordAug(action='swap', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer)
-    if name == 'random_delete':
-        return naw.RandomWordAug(action='delelte', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer)
-    # 10.44s
-    if name == 'wordembs_word2vec':
-        # Slow
-        return naw.WordEmbsAug(action='substitute', model_type='word2vec', model_path='./GoogleNews-vectors-negative300.bin', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, top_k=10)
-    # 0.0024s
-    if name == 'wordembs_word2vec_insert':
-        return naw.WordEmbsAug(action='insert', model_type='word2vec', model_path='./GoogleNews-vectors-negative300.bin', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, top_k=10)
-    # 0.47s
-    if name == 'contextembs_distilbert':
-        return naw.ContextualWordEmbsAug(action='substitute', model_path='distilbert-base-uncased', top_k=10, device='cuda')
-    if name == 'contextembs_distilbert_insert':
-        return naw.ContextualWordEmbsAug(action='insert', model_path='distilbert-base-uncased', top_k=10, device='cuda')
-    # 4.129s
-    if name == 'back_translation_ru':
-        # EN->RU->EN
-        return naw.BackTranslationAug(from_model_name='facebook/wmt19-en-ru',  to_model_name='facebook/wmt19-ru-en', device='cuda')
-    # 4.97s
-    if name == 'back_translation_de':
-        # EN->DE->EN
-        return naw.BackTranslationAug(from_model_name='facebook/wmt19-en-de',  to_model_name='facebook/wmt19-de-en', device='cuda')
+augmenter_dict = {
+    'synonym_wordnet': (augmenter.SynonymAug(aug_src='wordnet', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 3),
+    'random_swap': (augmenter.RandomWordAug(action='swap', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 3),
+    # 'wordembs_word2vec': (augmenter.WordEmbsAug(model_type='word2vec', model_path='./GoogleNews-vectors-negative300.bin', device='cuda', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 3),
+    'contextembs_distilbert': (augmenter.ContextualWordEmbsAug(model_path='distilbert-base-uncased', action="substitute", device='cuda', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 3),
+}
+
+# generate range of alphas
+def get_alphas(alpha_start, alpha_end, n_steps, scheme):
+    if scheme == "linear":
+        return torch.arange(alpha_start, alpha_end, (alpha_end - alpha_start) / n_steps)
+    else:
+        return [0.0] * n_steps # no MLM loss
 
 def main():
     # define parser and arguments
     args = get_train_test_args()
 
     util.set_seed(args.seed)
-    if args.checkpoint_path:
-        model = DistilBertForQuestionAnswering.from_pretrained(args.checkpoint_path)
-    else:
-        model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
     tokenizer = DistilBertTokenizerFast.from_pretrained('distilbert-base-uncased')
+
+    vocab_size = len(tokenizer.get_vocab().keys())
+
+    if args.model == 'bert':
+        if args.checkpoint_path:
+            model = DistilBertForQuestionAnswering.from_pretrained(args.checkpoint_path)
+        else:
+            model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
+    elif args.model == 'mlm':
+        if args.checkpoint_path:
+            model = MLMModel.from_pretrained(args.checkpoint_path)
+        else:
+            model = MLMModel.from_pretrained('distilbert-base-uncased')
+        model.set_mask_token(tokenizer.mask_token_id)
+        model.add_vocab_size(vocab_size)
+    else:
+        raise ValueError('--model parameter must be one of the following:{"bert", "mlm"}')
 
     if args.do_train:
         if not os.path.exists(args.save_dir):
@@ -348,34 +336,38 @@ def main():
         log.info("Preparing Training Data...")
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         trainer = Trainer(args, log)
-        augmenters = [get_augmenter(aug_name) for aug_name in args.augment_methods.split(',') if aug_name]
-        train_dataset, _ = get_dataset(
-            args, args.train_datasets, args.data_dir, tokenizer, 'train', args.augment_datasets, augmenters)
+        train_dataset, _ = get_dataset(args, args.train_datasets, args.train_dir, tokenizer, 'train', args.augmented_datasets, [augmenter_dict[aug_name] for aug_name in args.augmentation_methods.split(',')])
         log.info("Preparing Validation Data...")
-        val_dataset, val_dict = get_dataset(args, args.eval_datasets, args.data_dir, tokenizer, 'val')
+        val_dataset, val_dict = get_dataset(args, args.train_datasets, args.val_dir, tokenizer, 'val')
         train_loader = DataLoader(train_dataset,
-                                  batch_size=args.batch_size,
-                                  sampler=RandomSampler(train_dataset))
+                                batch_size=args.batch_size,
+                                sampler=RandomSampler(train_dataset))
         val_loader = DataLoader(val_dataset,
                                 batch_size=args.batch_size,
                                 sampler=SequentialSampler(val_dataset))
-        # INFO: Always resize model after get_dataset for new tokens has been added.
-        model.resize_token_embeddings(len(tokenizer))
-        best_scores = trainer.train(model, train_loader, val_loader, val_dict)
+        if args.model == 'mlm':
+            alpha_start = 2.0
+            alpha_end   = 0.5
+            n_steps = args.num_epochs * len(train_loader)
+            alphas = get_alphas(alpha_start, alpha_end, n_steps, "linear")
+            model.set_alphas(alphas)
+
+        best_scores = trainer.train(model, train_loader, val_loader, val_dict, args.model)
     if args.do_eval:
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-        split_name = 'test' if 'test' in args.eval_datasets else 'validation'
+        split_name = 'test' if 'test' in args.eval_dir else 'validation'
         log = util.get_logger(args.save_dir, f'log_{split_name}')
         trainer = Trainer(args, log)
         checkpoint_path = os.path.join(args.save_dir, 'checkpoint')
-        model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
+        if args.model == 'mlm':
+            model = MLMModel.from_pretrained(checkpoint_path)
+        elif args.model == 'bert':
+            model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
         model.to(args.device)
-        eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.data_dir, tokenizer, split_name)
+        eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.eval_dir, tokenizer, split_name)
         eval_loader = DataLoader(eval_dataset,
                                  batch_size=args.batch_size,
                                  sampler=SequentialSampler(eval_dataset))
-        # INFO: Always resize model after get_dataset for new tokens has been added.
-        model.resize_token_embeddings(len(tokenizer))
         eval_preds, eval_scores = trainer.evaluate(model, eval_loader,
                                                    eval_dict, return_preds=True,
                                                    split=split_name)
@@ -393,4 +385,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
