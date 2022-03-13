@@ -18,7 +18,7 @@ from args import get_train_test_args
 
 from tqdm import tqdm
 
-import augmenter
+import nlpaug.augmenter.word as naw
 
 def prepare_eval_data(dataset_dict, tokenizer):
     tokenized_examples = tokenizer(dataset_dict['question'],
@@ -277,16 +277,13 @@ class Trainer():
                         self.save(model)
         return best_scores
 
-def get_dataset(args, datasets, data_dir, tokenizer, split_name, augmentation_enabled_datasets = {}, enabled_augmenters = []):
+def get_dataset(args, datasets, data_dir, tokenizer, split_name, augment_datasets = {}, augmenters = []):
     datasets = datasets.split(',')
     dataset_dict = None
     dataset_name=''
     for dataset in datasets:
         dataset_name += f'_{dataset.replace("/", "_")}'
-        augmenters = []
-        if split_name == 'train' and dataset in augmentation_enabled_datasets:
-            augmenters = enabled_augmenters
-        dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}', augmenters)
+        dataset_dict_curr = util.read_squad(f'{data_dir}/{dataset}', augmenters if split_name == 'train' and dataset in augment_datasets else [])
         print(f"dataset {dataset} has {len(dataset_dict_curr['question'])} examples")
         dataset_dict = util.merge(dataset_dict, dataset_dict_curr)
     # INFO: data_encodings['input_ids']: pair of sequences: `[CLS] A [SEP] B [SEP]`
@@ -300,12 +297,36 @@ def get_dataset(args, datasets, data_dir, tokenizer, split_name, augmentation_en
         return FewShotDataset(args, tokenizer, data_encodings, qa_data_encodings_features_train_for_test, dataset_dict, cache_dir=None, mode=mode, use_demo=False), dataset_dict
     else:
         return util.QADataset(data_encodings, train=(split_name=='train')), dataset_dict
-augmenter_dict = {
-    'synonym_wordnet': (augmenter.SynonymAug(aug_src='wordnet', tokenizer=Tokenizer.tokenizer, aug_min=1, aug_max=30, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 10),
-    'random_swap': (augmenter.RandomWordAug(action='swap', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True), 5),
-    # 'wordembs_word2vec': (augmenter.WordEmbsAug(model_type='word2vec', model_path='./GoogleNews-vectors-negative300.bin', device='cpu', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 5),
-    # 'contextembs_distilbert': (augmenter.ContextualWordEmbsAug(model_path='distilbert-base-uncased', action="substitute", device='cpu', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, include_detail=True, top_k=5), 25),
-}
+
+def get_augmenter(name):
+    # 1.06s
+    if name == 'synonym_wordnet':
+        return naw.SynonymAug(aug_src='wordnet', aug_min=1, aug_max=30, aug_p=0.3, tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer)
+    # 0.0014s
+    if name == 'random_swap':
+        return naw.RandomWordAug(action='swap', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer)
+    if name == 'random_delete':
+        return naw.RandomWordAug(action='delelte', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer)
+    # 10.44s
+    if name == 'wordembs_word2vec':
+        # Slow
+        return naw.WordEmbsAug(action='substitute', model_type='word2vec', model_path='./GoogleNews-vectors-negative300.bin', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, top_k=10)
+    # 0.0024s
+    if name == 'wordembs_word2vec_insert':
+        return naw.WordEmbsAug(action='insert', model_type='word2vec', model_path='./GoogleNews-vectors-negative300.bin', tokenizer=Tokenizer.tokenizer, reverse_tokenizer=Tokenizer.reverse_tokenizer, top_k=10)
+    # 0.47s
+    if name == 'contextembs_distilbert':
+        return naw.ContextualWordEmbsAug(action='substitute', model_path='distilbert-base-uncased', top_k=10, device='cuda')
+    if name == 'contextembs_distilbert_insert':
+        return naw.ContextualWordEmbsAug(action='insert', model_path='distilbert-base-uncased', top_k=10, device='cuda')
+    # 4.129s
+    if name == 'back_translation_ru':
+        # EN->RU->EN
+        return naw.BackTranslationAug(from_model_name='facebook/wmt19-en-ru',  to_model_name='facebook/wmt19-ru-en', device='cuda')
+    # 4.97s
+    if name == 'back_translation_de':
+        # EN->DE->EN
+        return naw.BackTranslationAug(from_model_name='facebook/wmt19-en-de',  to_model_name='facebook/wmt19-de-en', device='cuda')
 
 def main():
     # define parser and arguments
@@ -327,7 +348,7 @@ def main():
         log.info("Preparing Training Data...")
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
         trainer = Trainer(args, log)
-        augmenters = [augmenter_dict[aug_name] for aug_name in args.augment_methods.split(',') if aug_name]
+        augmenters = [get_augmenter(aug_name) for aug_name in args.augment_methods.split(',') if aug_name]
         train_dataset, _ = get_dataset(
             args, args.train_datasets, args.data_dir, tokenizer, 'train', args.augment_datasets, augmenters)
         log.info("Preparing Validation Data...")

@@ -1,3 +1,9 @@
+# Final experiments
+
+# Baseline
+python train.py --do-train --run-name baseline --num-epochs=3 --lr=3e-5 --recompute-features --train-datasets=indomain_train/squad,indomain_train/nat_questions,indomain_train/newsqa --eval-datasets=indomain_val/squad,indomain_val/nat_questions,indomain_val/newsqa --visualize-predictions --eval-after-epoch
+
+
 Command:
 python train.py --do-train --eval-after-epoch --run-name=oo-SynonymAug-3-WordEmbsAug-3 --visualize-predictions --checkpoint-path=save/baseline-01/checkpoint --train-dir=datasets/oodomain_train --val-dir=datasets/oodomain_val --train-datasets=race,relation_extraction,duorc --num-epochs=10 --lr=3e-5 --recompute-features
 

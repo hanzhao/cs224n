@@ -5,6 +5,7 @@ import logging
 import pickle
 import string
 import re
+import time
 from pathlib import Path
 from collections import Counter, OrderedDict, defaultdict as ddict
 import torch
@@ -186,105 +187,82 @@ class QADataset(Dataset):
     def __len__(self):
         return len(self.encodings['input_ids'])
 
-def find_all_indices(s, substr):
-    res = []
-    q = -1
-    idx = s.find(substr, q + 1)
-    while idx != -1:
-        res.append(idx)
-        idx = s.find(substr, q + 1)
-    return res
-
 def read_squad(path, augmenters = []):
     path = Path(path)
     with open(path, 'rb') as f:
         squad_dict = json.load(f)
     data_dict = {'question': [], 'context': [], 'id': [], 'answer': []}
-    total_original_samples = 0
-    total_augmented_samples = 0
-    rejected_augmented_samples = 0
-    for group in squad_dict['data']:
+
+    # Counters
+    question_only = 0
+    original_qa_pairs = 0
+    augmented_qa_pairs = 0
+    last_check_time = time.time()
+
+    for group_index, group in enumerate(squad_dict['data']):
         for passage in group['paragraphs']:
-            original_context = passage['context']
-            contexts = [(original_context, [])]
-            for augmenter, n_candidates in augmenters:
-                if n_candidates == 1:
-                    contexts.append(augmenter.augment(original_context, n=n_candidates))
+            context = passage['context']
+            for qa in passage['qas']:
+                now = time.time()
+                if now - last_check_time > 10:
+                    print(f"[INFO] processing {group_index} of {len(squad_dict['data'])} groups")
+                    last_check_time = now
+                # Original
+                question = qa['question']
+                if len(qa['answers']) == 0:
+                    data_dict['question'].append(question)
+                    data_dict['context'].append(context)
+                    data_dict['id'].append(qa['id'])
+                    question_only += 1
                 else:
-                    contexts = contexts + augmenter.augment(original_context, n=n_candidates)
-            for idx, context_maybe_with_changelog in enumerate(contexts):
-                context = ''
-                changelog = None
-                if len(context_maybe_with_changelog) == 2:
-                    (context, changelog) = context_maybe_with_changelog
-                else:
-                    context = context_maybe_with_changelog
-                for qa in passage['qas']:
-                    # Fix primary key with suffix "_0", "_1", ..., when augmentation enabled.
-                    qa_id = f"{qa['id']}_{idx}" if len(augmenters) > 0 else qa['id']
-                    question = qa['question']
-                    if len(qa['answers']) == 0:
+                    for answer in qa['answers']:
                         data_dict['question'].append(question)
                         data_dict['context'].append(context)
+                        data_dict['id'].append(qa['id'])
+                        data_dict['answer'].append(answer)
+                        original_qa_pairs += 1
+                # Apply data augmenters.
+                if len(augmenters) == 0:
+                    continue
+                for answer in qa['answers']:
+                    # Find range of answer sentence.
+                    sentence_start = answer['answer_start']
+                    while sentence_start >= 0 and context[sentence_start] != '.':
+                        sentence_start -= 1
+                    sentence_start += 1
+                    sentence_end = answer['answer_start']
+                    while sentence_end < len(context) and context[sentence_end] != '.':
+                        sentence_end += 1
+                    sentence_end -= 1
+                    context_before = context[0:sentence_start]
+                    answer_sentence = context[sentence_start:sentence_end+1]
+                    context_after = context[sentence_end+1:]
+                    for index, augmenter in enumerate(augmenters):
+                        qa_id = f"{qa['id']}_{index}"
+
+                        # Run augmenter
+                        # start_time = time.time()
+                        new_context_before = augmenter.augment(context_before) if len(context_before) > 0 else ''
+                        new_context_after = augmenter.augment(context_after) if len(context_after) > 0 else ''
+                        new_context = new_context_before + answer_sentence + new_context_after
+                        answer_start = answer['answer_start'] - len(context_before) + len(new_context_before)
+                        # end_time = time.time()
+                        # print(f'[DEBUG] augmenter {index} took {end_time - start_time}s')
+                        
+                        # assert and check
+                        new_context_subtext = new_context[answer_start:answer_start+len(answer['text'])]
+                        if new_context_subtext != answer['text']:
+                            print(f"[DEBUG] expected context@{answer_start} {new_context_subtext} to be {answer['text']}")
+                            continue
+
+                        data_dict['question'].append(question)
+                        data_dict['context'].append(new_context)
                         data_dict['id'].append(qa_id)
-                    else:
-                        for answer in qa['answers']:
-                            answer_modified = False
-                            # answers may have been moved away.
-                            closest_change_index = -1
-                            offset = 0
-                            start_fix = 0
-                            if changelog is not None and len(changelog) == 0:
-                                total_original_samples += 1
-                            else:
-                                # Fix some data starting with "\n"
-                                for ch in original_context:
-                                    if ch == '\n':
-                                        start_fix -= 1
-                                    else:
-                                        break
-                                total_augmented_samples += 1
-                            if changelog is None:
-                                # fallback to use find
-                                possible_starts = find_all_indices(context, answer['text'])
-                                if len(possible_starts) == 1:
-                                    answer_start = possible_starts[0]
-                                else:
-                                    rejected_augmented_samples += 1
-                                    continue
-                            else:
-                                for change in changelog:
-                                    if change['orig_start_pos'] >= answer['answer_start'] + start_fix and change['orig_start_pos'] < answer['answer_start'] + start_fix + len(answer['text']):
-                                        answer_modified = True
-                                    if change['orig_start_pos'] > closest_change_index and change['orig_start_pos'] < answer['answer_start']:
-                                        closest_change_index = change['orig_start_pos']
-                                        if change['action'] == 'substitute' or change['action'] == 'swap':
-                                            offset = change['new_start_pos'] - change['orig_start_pos'] + len(change['new_token']) - len(change['orig_token'])
-                                        else:
-                                            print(f"[debug] changelog failed. original: {original_context}\naugmented: {context}\nchangelog {changelog}, original answer start {answer['answer_start']}")
-                                            raise ValueError(f"Unimplemented offset for {change['action']}")
-                                answer_start = -101
-                                if 'answer_start' in answer:
-                                    answer_start = answer['answer_start'] + offset + start_fix
-                            substr = context[answer_start:answer_start+len(answer['text'])]
-                            if answer_start == -101:
-                                answer = {'answer_start': -1, 'text': answer['text']}
-                            elif substr.lower() == answer['text'].lower():
-                                answer = {'answer_start': answer_start, 'text': answer['text']}
-                            else:
-                                rejected_augmented_samples += 1
-                                if not answer_modified:
-                                    print(f"[warning] expect context substring {substr} is answer {answer['text']}, ignored")
-                                    # print(f"[debug] original: {original_context}\naugmented: {context}\nchangelog {changelog}, original answer start {answer['answer_start']}, new answer start {answer_start}")
-                                continue
-                            data_dict['question'].append(question)
-                            data_dict['context'].append(context)
-                            data_dict['id'].append(qa_id)
-                            data_dict['answer'].append(answer)
-    
-    print(f"total length: {len(data_dict['answer'])}")
-    print(f'[data augmentation] original: {total_original_samples}, total augmentation: {total_augmented_samples}, augmentation rejected: {rejected_augmented_samples}')
-    
+                        data_dict['answer'].append({'text': answer['text'], 'answer_start': answer_start})
+                        augmented_qa_pairs += 1
+
+    print(f'[DEBUG] processed {original_qa_pairs} organic QA pairs, {augmented_qa_pairs} augmented QA pairs, {question_only} questions without answer.')
+
     id_map = ddict(list)
     for idx, qid in enumerate(data_dict['id']):
         id_map[qid].append(idx)
@@ -412,7 +390,10 @@ def postprocess_qa_predictions(examples, features, predictions,
             # We grab the predictions of the model for this feature.
             start_logits = all_start_logits[feature_index]
             end_logits = all_end_logits[feature_index]
-            seq_ids = features['sequence_ids'][feature_index]
+            if 'sequence_ids' in features:
+                seq_ids = features['sequence_ids'][feature_index]
+            else:
+                seq_ids = features.sequence_ids(feature_index)
             non_pad_idx = len(seq_ids) - 1
             while not seq_ids[non_pad_idx]:
                 non_pad_idx -= 1
