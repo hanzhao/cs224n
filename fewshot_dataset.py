@@ -392,6 +392,8 @@ class FewShotDataset(torch.utils.data.Dataset):
         assert mode in ["train", "dev", "test"]
 
         self.keys = ['input_ids', 'attention_mask']
+        if args.prompt:
+            self.keys += ['mask_pos']
         if mode == 'train':
             self.keys += ['start_positions', 'end_positions']
 
@@ -974,6 +976,8 @@ class FewShotDataset(torch.utils.data.Dataset):
             logger.info("attention_mask has length %s and content: %s", len(features['attention_mask']), features['attention_mask'])
             logger.info("offset_mapping has length %s and content: %s", len(features['offset_mapping']), features['offset_mapping'])
             logger.info("sequence_ids has length %s and content: %s", len(features['sequence_ids']), features['sequence_ids'])
+            if prompt:
+                logger.info("mask_pos has length %s and content: %s", len(features['mask_pos']), features['mask_pos'])
             if 'start_positions' in features:
                 logger.info("prompt_offset_start_position: %s" % features['start_positions'])
                 logger.info("prompt_offset_end_position: %s" % features['end_positions'])
