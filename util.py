@@ -187,6 +187,8 @@ class QADataset(Dataset):
     def __len__(self):
         return len(self.encodings['input_ids'])
 
+STOP_TOKENS = ['.', '!', '?']
+
 def read_squad(path, augmenters = []):
     path = Path(path)
     with open(path, 'rb') as f:
@@ -227,11 +229,15 @@ def read_squad(path, augmenters = []):
                 for answer in qa['answers']:
                     # Find range of answer sentence.
                     sentence_start = answer['answer_start']
-                    while sentence_start >= 0 and context[sentence_start] != '.':
+                    while sentence_start >= 0:
+                        if context[sentence_start] in STOP_TOKENS and context[sentence_start + 1] == ' ':
+                            break
                         sentence_start -= 1
                     sentence_start += 1
-                    sentence_end = answer['answer_start']
-                    while sentence_end < len(context) and context[sentence_end] != '.':
+                    sentence_end = answer['answer_start'] + len(answer['text']) - 1
+                    while sentence_end < len(context):
+                        if context[sentence_end] in STOP_TOKENS and (sentence_end == len(context) - 1 or context[sentence_end + 1] == ' '):
+                            break
                         sentence_end += 1
                     sentence_end -= 1
                     context_before = context[0:sentence_start]

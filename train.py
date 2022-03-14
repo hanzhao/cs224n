@@ -188,7 +188,8 @@ class Trainer():
                 # Setup for forward
                 input_ids = batch['input_ids'].to(device)
                 attention_mask = batch['attention_mask'].to(device)
-                mask_pos = batch['mask_pos'].to(device)
+                if 'mask_pos' in batch:
+                    mask_pos = batch['mask_pos'].to(device)
                 batch_size = len(input_ids)
                 if self.args.model == 'mlm_qa':
                     outputs = model(input_ids, attention_mask=attention_mask, mask_pos=mask_pos)
@@ -242,7 +243,8 @@ class Trainer():
                     attention_mask = batch['attention_mask'].to(device)
                     start_positions = batch['start_positions'].to(device)
                     end_positions = batch['end_positions'].to(device)
-                    mask_pos = batch['mask_pos'].to(device)
+                    if 'mask_pos' in batch:
+                        mask_pos = batch['mask_pos'].to(device)
                     if self.args == "mlm":
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
@@ -370,16 +372,6 @@ def main():
     if args.model == 'bert':
         if args.checkpoint_path:
             model = DistilBertForQuestionAnswering.from_pretrained(args.checkpoint_path)
-            if args.freeze_layers is not None:
-                for name, param in model.named_parameters():
-                    if name.startswith('distilbert.embeddings.'):
-                        param.requires_grad = False
-                        print(f'[DEBUG] freeze {name}')
-                        continue
-                    for i in range(args.freeze_layers + 1):
-                        if name.startswith(f'distilbert.transformer.layer.{i}.'):
-                            param.requires_grad = False
-                            print(f'[DEBUG] freeze {name}')
         else:
             model = DistilBertForQuestionAnswering.from_pretrained("distilbert-base-uncased")
     elif args.model == 'mlm':
@@ -396,6 +388,17 @@ def main():
             model = DistilBertForMaskedLMQA.from_pretrained("distilbert-base-uncased")
     else:
         raise ValueError('--model parameter must be one of the following:{"bert", "mlm"}')
+
+    if args.freeze_layers is not None:
+        for name, param in model.named_parameters():
+            if name.startswith('distilbert.embeddings.'):
+                param.requires_grad = False
+                print(f'[DEBUG] freeze {name}')
+                continue
+            for i in range(args.freeze_layers + 1):
+                if name.startswith(f'distilbert.transformer.layer.{i}.'):
+                    param.requires_grad = False
+                    print(f'[DEBUG] freeze {name}')
 
     if args.do_train:
         if not os.path.exists(args.save_dir):
