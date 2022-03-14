@@ -473,6 +473,8 @@ def postprocess_qa_predictions(examples, features, predictions,
                 break
             i += 1
         if i == len(predictions):
+            print("predictions size: ", len(predictions))
+            print(predictions)
             import pdb; pdb.set_trace();
 
         best_non_null_pred = predictions[i]

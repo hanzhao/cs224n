@@ -281,10 +281,13 @@ def tokenize_multipart_input(
         assert prompt_offset > 0
 
         # INFO: Use this offset to also pad offset_mapping and sequence_ids
-        offset_mapping = example.offset_mapping[:original_sep] + [(0, 0)] * prompt_offset + example.offset_mapping[original_sep:]
+        offset_mapping = example.offset_mapping[:original_sep] + [None] * prompt_offset + example.offset_mapping[original_sep:]
+        pad_length = max_length - len(offset_mapping)
+        offset_mapping += [None] * pad_length
         # TODO(chen): test accuracy of this offset by making sure boundaries are right: 1 starts at context
-        # TODO(chen): test if it is appropriate for prompt to receive None seq_ids.
-        sequence_ids = example.sequence_ids[:original_sep] + [None] * prompt_offset + example.sequence_ids[original_sep:]
+        sequence_ids = example.sequence_ids[:original_sep] + [0] * prompt_offset + example.sequence_ids[original_sep:]
+        sequence_ids += [None] * pad_length
+        assert len(offset_mapping) == len(sequence_ids)
 
         # TODO(chen): make sure <cls> is the only condition where boundary shouldn't move
         if example.label is not None:
@@ -299,6 +302,7 @@ def tokenize_multipart_input(
         input_ids = [tokenizer.cls_token_id]
         attention_mask = [1]
         token_type_ids = [0]
+
 
         for sent_id, input_text in enumerate(input_text_list):
             if input_text is None:
@@ -326,7 +330,9 @@ def tokenize_multipart_input(
         input_ids.append(tokenizer.pad_token_id)
         attention_mask.append(0)
         token_type_ids.append(0)
-
+    # INFO: making sure that padded sequences are in equal length.
+    assert len(input_ids) == len(offset_mapping)
+    
     # Truncate
     if len(input_ids) > max_length:
         if truncate_head:
