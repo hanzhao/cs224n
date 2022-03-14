@@ -420,12 +420,8 @@ def main():
         val_loader = DataLoader(val_dataset,
                                 batch_size=args.batch_size,
                                 sampler=SequentialSampler(val_dataset))
-        # INFO: Always resize model after get_dataset for new tokens has been added.
-        # populate label_word_list
         if args.model == 'mlm_qa':
             model.label_word_list = torch.tensor(train_dataset.label_word_list).long().to(args.device)
-        model.resize_token_embeddings(len(tokenizer))
-        best_scores = trainer.train(model, train_loader, val_loader, val_dict)
         if args.model == 'mlm':
             alpha_start = 2.0
             alpha_end   = 0.5
@@ -433,6 +429,9 @@ def main():
             alphas = get_alphas(alpha_start, alpha_end, n_steps, "linear")
             model.set_alphas(alphas)
 
+        # INFO: Always resize model after get_dataset for new tokens has been added.
+        # populate label_word_list
+        model.resize_token_embeddings(len(tokenizer))
         best_scores = trainer.train(model, train_loader, val_loader, val_dict)
     if args.do_eval:
         args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
