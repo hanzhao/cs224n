@@ -33,7 +33,6 @@ class DistilBertForMaskedLMQA(DistilBertForMaskedLM):
         gelu = GELU()
 
         assert mask_pos is not None
-        mask_pos = mask_pos.squeeze() # (bs, 2), got rid of the middle 1.
         assert mask_pos.size(dim=1) == 2
         assert mask_pos.size(dim=0) == input_ids.size(dim=0)
         mask_start = mask_pos[:,0] # (bs,)
