@@ -178,7 +178,7 @@ class QADataset(Dataset):
         self.encodings = encodings
         self.keys = ['input_ids', 'attention_mask']
         if train:
-            self.keys += ['start_positions', 'end_positions']
+            self.keys += ['start_positions', 'end_positions', 'sources']
         assert(all(key in self.encodings for key in self.keys))
 
     def __getitem__(self, idx):
@@ -189,11 +189,22 @@ class QADataset(Dataset):
 
 STOP_TOKENS = ['.', '!', '?']
 
+def get_source_type(path):
+    if 'duorc' in path:
+        return 1
+    if 'race' in path:
+        return 2
+    if 'relation_extraction' in path:
+        return 3
+    return 0
+
 def read_squad(path, augmenters = []):
+    source = get_source_type(path)
+
     path = Path(path)
     with open(path, 'rb') as f:
         squad_dict = json.load(f)
-    data_dict = {'question': [], 'context': [], 'id': [], 'answer': []}
+    data_dict = {'question': [], 'context': [], 'id': [], 'answer': [], 'source': []}
 
     # Counters
     question_only = 0
@@ -215,6 +226,7 @@ def read_squad(path, augmenters = []):
                     data_dict['question'].append(question)
                     data_dict['context'].append(context)
                     data_dict['id'].append(qa['id'])
+                    data_dict['source'].append(source)
                     question_only += 1
                 else:
                     for answer in qa['answers']:
@@ -222,6 +234,7 @@ def read_squad(path, augmenters = []):
                         data_dict['context'].append(context)
                         data_dict['id'].append(qa['id'])
                         data_dict['answer'].append(answer)
+                        data_dict['source'].append(source)
                         original_qa_pairs += 1
                 # Apply data augmenters.
                 if len(augmenters) == 0:
@@ -265,6 +278,7 @@ def read_squad(path, augmenters = []):
                         data_dict['context'].append(new_context)
                         data_dict['id'].append(qa_id)
                         data_dict['answer'].append({'text': answer['text'], 'answer_start': answer_start})
+                        data_dict['source'].append(source)
                         augmented_qa_pairs += 1
 
     print(f'[DEBUG] processed {original_qa_pairs} organic QA pairs, {augmented_qa_pairs} augmented QA pairs, {question_only} questions without answer.')
@@ -273,7 +287,7 @@ def read_squad(path, augmenters = []):
     for idx, qid in enumerate(data_dict['id']):
         id_map[qid].append(idx)
 
-    data_dict_collapsed = {'question': [], 'context': [], 'id': []}
+    data_dict_collapsed = {'question': [], 'context': [], 'id': [], 'source': []}
     if data_dict['answer']:
         data_dict_collapsed['answer'] = []
     for qid in id_map:
@@ -287,6 +301,8 @@ def read_squad(path, augmenters = []):
                 'answer_start': [answer['answer_start'] if 'answer_start' in answer else None for answer in all_answers],
                 'text': [answer['text'] for answer in all_answers]
             })
+        if 'source' in data_dict:
+            data_dict_collapsed['source'].append(data_dict['source'][ex_ids[0]])
     return data_dict_collapsed
 
 def add_token_positions(encodings, answers, tokenizer):
@@ -373,6 +389,39 @@ def eval_dicts(gold_dict, pred_dict):
     eval_dict = {'EM': 100. * em / total,
                  'F1': 100. * f1 / total}
     return eval_dict
+
+def postprocess_moe_predictions(examples, features, all_logits):
+    # Build a map example to its corresponding features.
+    example_id_to_index = {k: i for i, k in enumerate(examples["id"])}
+    features_per_example = ddict(list)
+    for i, feat_id in enumerate(features['id']):
+        features_per_example[example_id_to_index[feat_id]].append(i)
+    
+    # The dictionaries we have to fill.
+    all_predictions = OrderedDict()
+
+    # Let's loop over all the examples!
+    for example_index in tqdm(range(len(examples['id']))):
+        example = {key : examples[key][example_index] for key in examples}
+        # Those are the indices of the features associated to the current example.
+        feature_indices = features_per_example[example_index]
+        prelim_predictions = []
+
+        # Looping through all the features associated to the current example.
+        for feature_index in feature_indices:
+            # We grab the predictions of the model for this feature.
+            logits = torch.softmax(all_logits[feature_index], dim=-1)
+            prelim_predictions.append(
+                {
+                    "answer": torch.argmax(logits).item(),
+                    "score": torch.max(logits).item(),
+                }
+            )
+        predictions = sorted(prelim_predictions, key=lambda x: x["score"], reverse=True)
+        best_pred = predictions[0]
+        all_predictions[example["id"]] = best_pred
+
+    return all_predictions
 
 def postprocess_qa_predictions(examples, features, predictions,
                                n_best_size=20, max_answer_length=30):

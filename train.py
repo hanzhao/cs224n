@@ -6,9 +6,7 @@ import torch
 import csv
 import util
 import re
-from transformers import DistilBertTokenizerFast
-from transformers import DistilBertForQuestionAnswering
-from transformers import AdamW
+from transformers import DistilBertTokenizerFast, DistilBertForQuestionAnswering, DistilBertForSequenceClassification, AdamW
 from tensorboardX import SummaryWriter
 from fewshot_dataset import FewShotDataset
 from model import MLMModel
@@ -78,6 +76,7 @@ def prepare_train_data(dataset_dict, tokenizer):
     tokenized_examples["start_positions"] = []
     tokenized_examples["end_positions"] = []
     tokenized_examples['id'] = []
+    tokenized_examples['sources'] = []
     inaccurate = 0
     for i, offsets in enumerate(tqdm(offset_mapping)):
         # We will label impossible answers with the index of the CLS token.
@@ -94,6 +93,7 @@ def prepare_train_data(dataset_dict, tokenizer):
         start_char = answer['answer_start'][0]
         end_char = start_char + len(answer['text'][0])
         tokenized_examples['id'].append(dataset_dict['id'][sample_index])
+        tokenized_examples['sources'].append(dataset_dict['source'][sample_index])
         # Start token index of the current span in the text.
         token_start_index = 0
         while sequence_ids[token_start_index] != 1:
@@ -182,6 +182,7 @@ class Trainer():
         pred_dict = {}
         all_start_logits = []
         all_end_logits = []
+        all_logits = []
         with torch.no_grad(), \
                 tqdm(total=len(data_loader.dataset)) as progress_bar:
             for batch in data_loader:
@@ -190,10 +191,15 @@ class Trainer():
                 attention_mask = batch['attention_mask'].to(device)
                 if 'mask_pos' in batch:
                     mask_pos = batch['mask_pos'].to(device)
+                if 'sources' in batch:
+                    sources = batch['sources'].to(device)
                 batch_size = len(input_ids)
                 if self.args.model == 'mlm_qa':
                     outputs = model(input_ids, attention_mask=attention_mask, mask_pos=mask_pos)
                     start_logits, end_logits = outputs.start_logits, outputs.end_logits
+                if self.args.model == 'moe':
+                    outputs = model(input_ids, attention_mask=attention_mask)
+                    logits = outputs.logits
                 else:
                     outputs = model(input_ids, attention_mask=attention_mask, return_dict = False)
                     # Forward
@@ -202,17 +208,47 @@ class Trainer():
                     else:
                         start_logits, end_logits = outputs[0], outputs[1] # when no loss can be computed
                 # TODO: compute loss
-                all_start_logits.append(start_logits)
-                all_end_logits.append(end_logits)
+                if self.args.model == 'moe':
+                    all_logits.append(logits)
+                else:
+                    all_start_logits.append(start_logits)
+                    all_end_logits.append(end_logits)
                 progress_bar.update(batch_size)
+
+        if self.args.model == 'moe':
+            logits = torch.cat(all_logits).cpu()
+            preds = util.postprocess_moe_predictions(data_dict,
+                                                     data_loader.dataset.encodings,
+                                                     logits)
+            buckets = {
+                40: 0, 45: 0, 50: 0, 55: 0, 60: 0, 65: 0, 
+                70: 0, 75: 0, 80: 0, 85: 0, 90: 0, 95: 0,
+            }
+            
+            correct = total = 0
+            id2index = {curr_id : idx for idx, curr_id in enumerate(data_dict['id'])}
+            for curr_id in preds:
+                total += 1
+                index = id2index[curr_id]
+                ground_truth = data_dict['source'][index]
+                prediction = preds[curr_id]['answer']
+                correct += ground_truth == prediction
+                bucket = int(preds[curr_id]['score'] * 100) // 5 * 5
+                buckets[bucket] += 1
+
+            print(buckets)
+            results = OrderedDict([('Precision', 100. * correct / total)])
+            if return_preds:
+                return preds, results
+            return results
 
         # Get F1 and EM scores
         start_logits = torch.cat(all_start_logits).cpu().numpy()
         end_logits = torch.cat(all_end_logits).cpu().numpy()
         preds = util.postprocess_qa_predictions(data_dict,
-                                                 data_loader.dataset.encodings,
-                                                 (start_logits, end_logits),
-                                                 max_answer_length=self.max_answer_length)
+                                                data_loader.dataset.encodings,
+                                                (start_logits, end_logits),
+                                                max_answer_length=self.max_answer_length)
         if split == 'validation':
             results = util.eval_dicts(data_dict, preds)
             results_list = [('F1', results['F1']),
@@ -230,7 +266,10 @@ class Trainer():
         model.to(device)
         optim = AdamW(model.parameters(), lr=self.lr)
         global_idx = 0
-        best_scores = {'F1': -1.0, 'EM': -1.0}
+        if self.args.model == 'moe':
+            best_scores = {'Precision': -1.0}
+        else:
+            best_scores = {'F1': -1.0, 'EM': -1.0}
         tbx = SummaryWriter(self.save_dir)
 
         for epoch_num in range(self.num_epochs):
@@ -245,7 +284,9 @@ class Trainer():
                     end_positions = batch['end_positions'].to(device)
                     if 'mask_pos' in batch:
                         mask_pos = batch['mask_pos'].to(device)
-                    if self.args == "mlm":
+                    if 'sources' in batch:
+                        sources = batch['sources'].to(device)
+                    if self.args.model == "mlm":
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
                                         end_positions=end_positions, decay_alpha=True, mask_inputs=True)
@@ -253,6 +294,8 @@ class Trainer():
                         outputs = model(input_ids, attention_mask=attention_mask, mask_pos=mask_pos,
                                         start_positions=start_positions,
                                         end_positions=end_positions)
+                    elif self.args.model == 'moe':
+                        outputs = model(input_ids, attention_mask=attention_mask, labels=sources)
                     else:
                         outputs = model(input_ids, attention_mask=attention_mask,
                                         start_positions=start_positions,
@@ -278,9 +321,14 @@ class Trainer():
                                            step=global_idx,
                                            split='val',
                                            num_visuals=self.num_visuals)
-                        if curr_score['F1'] >= best_scores['F1']:
-                            best_scores = curr_score
-                            self.save(model)
+                        if self.args.model == 'moe':
+                            if curr_score['Precision'] >= best_scores['Precision']:
+                                best_scores = curr_score
+                                self.save(model)
+                        else:
+                            if curr_score['F1'] >= best_scores['F1']:
+                                best_scores = curr_score
+                                self.save(model)
                     global_idx += 1
                 if self.eval_after_epoch:
                     self.log.info(f'Evaluating at epoch {epoch_num}...')
@@ -297,9 +345,14 @@ class Trainer():
                                         step=global_idx,
                                         split='val',
                                         num_visuals=self.num_visuals)
-                    if curr_score['F1'] >= best_scores['F1']:
-                        best_scores = curr_score
-                        self.save(model)
+                    if self.args.model == 'moe':
+                        if curr_score['Precision'] >= best_scores['Precision']:
+                            best_scores = curr_score
+                            self.save(model)
+                    else:
+                        if curr_score['F1'] >= best_scores['F1']:
+                            best_scores = curr_score
+                            self.save(model)
         return best_scores
 
 def get_dataset(args, datasets, data_dir, tokenizer, split_name, augment_datasets = {}, augmenters = []):
@@ -386,6 +439,11 @@ def main():
             model = DistilBertForMaskedLMQA.from_pretrained(args.checkpoint_path)
         else:
             model = DistilBertForMaskedLMQA.from_pretrained("distilbert-base-uncased")
+    elif args.model == 'moe':
+        if args.checkpoint_path:
+            model = DistilBertForSequenceClassification.from_pretrained(args.checkpoint_path)
+        else:
+            model = DistilBertForSequenceClassification.from_pretrained("distilbert-base-uncased", num_labels=args.num_experts)
     else:
         raise ValueError('--model parameter must be one of the following:{"bert", "mlm"}')
 
@@ -445,6 +503,8 @@ def main():
             model = DistilBertForMaskedLMQA.from_pretrained(checkpoint_path)
         elif args.model == 'bert':
             model = DistilBertForQuestionAnswering.from_pretrained(checkpoint_path)
+        elif args.model == 'moe':
+            model = DistilBertForSequenceClassification.from_pretrained(checkpoint_path)
         model.to(args.device)
         eval_dataset, eval_dict = get_dataset(args, args.eval_datasets, args.data_dir, tokenizer, split_name)
         eval_loader = DataLoader(eval_dataset,
@@ -460,11 +520,18 @@ def main():
         # Write submission file
         sub_path = os.path.join(args.save_dir, split_name + '_' + args.sub_file)
         log.info(f'Writing submission file to {sub_path}...')
-        with open(sub_path, 'w', newline='', encoding='utf-8') as csv_fh:
-            csv_writer = csv.writer(csv_fh, delimiter=',')
-            csv_writer.writerow(['Id', 'Predicted'])
-            for uuid in sorted(eval_preds):
-                csv_writer.writerow([uuid, eval_preds[uuid]])
+        if args.model == 'moe':
+            with open(sub_path, 'w', newline='', encoding='utf-8') as csv_fh:
+                csv_writer = csv.writer(csv_fh, delimiter=',')
+                csv_writer.writerow(['Id', 'Predicted', 'Score'])
+                for uuid in sorted(eval_preds):
+                    csv_writer.writerow([uuid, eval_preds[uuid]['answer'], eval_preds[uuid]['score']])
+        else:
+            with open(sub_path, 'w', newline='', encoding='utf-8') as csv_fh:
+                csv_writer = csv.writer(csv_fh, delimiter=',')
+                csv_writer.writerow(['Id', 'Predicted'])
+                for uuid in sorted(eval_preds):
+                    csv_writer.writerow([uuid, eval_preds[uuid]])
 
 
 if __name__ == '__main__':

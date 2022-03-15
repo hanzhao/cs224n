@@ -28,6 +28,7 @@ def get_train_test_args():
     parser.add_argument('--augment-methods', type=str, default='')
     parser.add_argument('--freeze-layers', type=int, default=None)
     parser.add_argument('--max-answer-length', type=int, default=30)
+    parser.add_argument('--num-experts', type=int, default=4)
     # in-context
     parser.add_argument('--in-context', action='store_true')
     parser.add_argument('--double-demo', action='store_true')
